@@ -1,0 +1,280 @@
+---
+# tasks file for apps
+
+- name: install wget
+  yum:
+    name: wget
+    state: present
+
+- name: install openjdk
+  yum:
+    name: java-1.8.0-openjdk
+    state: present
+
+- name: prints the version of java
+  shell: java -version 2>&1
+  register: java_version
+- debug: msg="{{java_version.stdout}}"
+
+- name: prints the version of python
+  shell: python --version 2>&1
+  register: python_version
+- debug: msg="{{python_version.stdout}}"
+   
+- name: download jenkins.repo
+  get_url:
+    url: http://pkg.jenkins-ci.org/redhat-stable/jenkins.repo
+    dest: /etc/yum.repos.d/jenkins.repo
+
+- name: import jenkins key
+  rpm_key:
+    state: present
+    key: https://jenkins-ci.org/redhat/jenkins-ci.org.key
+
+- name: install jenkins
+  yum:
+    name: jenkins
+    state: present
+
+- name: remove the jenkins folder
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - /var/lib/jenkins
+    - /var/lib/final2.zip
+
+- name: Download zip file from s3 bucket
+  get_url:
+    url: https://yasansible.s3-us-west-2.amazonaws.com/final2.zip
+    dest: /var/lib
+
+- name: Unarchive zip file in the same path
+  unarchive:
+    src: /var/lib/final2.zip
+    dest: /var/lib
+    remote_src: yes
+
+
+- name: Recursively change ownership of a directory
+  file:
+    path: /var/lib/jenkins
+    state: directory
+    recurse: yes
+    owner: jenkins
+    group: jenkins
+
+- name: start jenkins
+  systemd:
+    name: jenkins
+    state: started
+
+- name: enable jenkins
+  systemd:
+    name: jenkins
+    enabled: true
+
+# tasks for sonarqube
+
+- name: Download sonarqube
+  get_url:
+    url: https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-6.4.zip
+    dest: /opt
+
+- name: Unarchive the config zip file in the same folder
+  unarchive:
+    src: /opt/sonarqube-6.4.zip
+    dest: /opt
+    remote_src: yes
+
+- name: start sonar on default port
+  shell: ./sonar.sh start
+  args:
+    chdir: /opt/sonarqube-6.4/bin/linux-x86-64
+    warn: false
+
+
+# tasks file for tomcat
+
+- name: add group "tomcat"
+  group: name=tomcat
+
+- name: add user "tomcat"
+  user: name=tomcat group=tomcat home=/usr/share/tomcat createhome=no
+  become: True
+  become_method: sudo
+
+- name: Download Tomcat
+  get_url: url=http://us.mirrors.quenda.co/apache/tomcat/tomcat-8/v8.5.40/bin/apache-tomcat-8.5.40.tar.gz dest=/opt/apache-tomcat-8.5.40.tar.gz
+
+- name: Extract archive
+  command: chdir=/usr/share /bin/tar xvf /opt/apache-tomcat-8.5.40.tar.gz -C /opt/ creates=/opt/apache-tomcat-8.5.40
+
+- name: Symlink install directory
+  file: src=/opt/apache-tomcat-8.5.40 path=/usr/share/tomcat state=link
+
+- name: Change ownership of Tomcat installation
+  file: path=/usr/share/tomcat/ owner=tomcat group=tomcat state=directory recurse=yes
+
+- name: remove the config folder
+  shell: rm -rf /usr/share/tomcat/conf
+
+- name: Download the tomcat config file from s3 bucket
+  get_url:
+    url: https://s3-us-west-2.amazonaws.com/yasansible/tomcatconfig.zip
+    dest: /usr/share/tomcat
+
+- name: Unarchive the config zip file in the same folder
+  unarchive:
+    src: /usr/share/tomcat/tomcatconfig.zip
+    dest: /usr/share/tomcat
+    remote_src: yes
+
+- name: remove the meta context file
+  shell: rm -rf /opt/apache-tomcat-8.5.40/webapps/manager/META-INF/context.xml
+
+- name: Download the meta context tomcat file from s3 bucket
+  get_url:
+    url: https://s3-us-west-2.amazonaws.com/yasansible/metacontexttomcat.zip
+    dest: /opt/apache-tomcat-8.5.40/webapps/manager/META-INF
+
+- name: Unarchive the context zip file in the same folder
+  unarchive:
+    src: /opt/apache-tomcat-8.5.40/webapps/manager/META-INF/metacontexttomcat.zip
+    dest: /opt/apache-tomcat-8.5.40/webapps/manager/META-INF
+    remote_src: yes
+
+- name: Run Tomcat
+  shell: ./startup.sh
+  args:
+    chdir: /opt/apache-tomcat-8.5.40/bin
+
+- name: wait for tomcat to start
+  wait_for: port=9090 delay=3 timeout=20
+
+# tasks file for nexus
+
+- name: Downloading the nexus zip file
+  get_url:
+    url: https://s3-us-west-2.amazonaws.com/cicdpoc/nexus-latest-bundle.tar.gz
+    dest: /usr/local
+
+- name: Unarchive zip file in the same path
+  unarchive:
+    src: /usr/local/nexus-latest-bundle.tar.gz
+    dest: /usr/local
+    remote_src: yes
+
+- name: remove the zip file from the folder
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - /usr/local/nexus-latest-bundle.tar.gz
+
+- name: linking the directory with nexus directory
+  shell: ln -s nexus-2.14.2-01/ nexus
+
+- name: setting the nexus home
+  shell: "echo $NEXUS_HOME"
+  environment:
+    NEXUS_HOME: /usr/local/nexus
+
+#- name: adding the nexus user
+#  command: sudo useradd -m nexus
+
+- name: changing ownership of the nexus folder
+  command: sudo chown -R nexus:nexus /usr/local/nexus-2.14.2-01/
+
+- name: changing ownership of the sonatype work folder
+  command: sudo chown -R nexus:nexus /usr/local/sonatype-work
+
+- name: replacing the content present in the file
+  command: sed -i '14d' /usr/local/nexus-2.14.2-01/bin/nexus
+
+- name: replacing the content present in the file
+  command: sed -i '23d' /usr/local/nexus-2.14.2-01/bin/nexus
+
+- name: replacing the content present in the file
+  command: sed -i '34d' /usr/local/nexus-2.14.2-01/bin/nexus
+
+- name: setting the nexus home
+  command: sed -i '14i NEXUS_HOME="/usr/local/nexus-2.14.2-01"' /usr/local/nexus-2.14.2-01/bin/nexus
+
+- name: changing the run as user to nexus
+  command: sed -i '23i RUN_AS_USER="nexus"' /usr/local/nexus-2.14.2-01/bin/nexus
+
+- name: replacing the content present in the file
+  command: sed -i '34i PIDDIR="/home/nexus"' /usr/local/nexus-2.14.2-01/bin/nexus
+
+- name: copying the nexus folder in the local directory to nexus folder in etc directory
+  command: sudo cp /usr/local/nexus-2.14.2-01/bin/nexus /etc/init.d/nexus
+
+- name: changing mode of the etc init.d directory
+  command: sudo chmod 755 /etc/init.d/nexus
+
+- name: check config
+  shell: chkconfig --add nexus
+  args:
+    chdir: /etc/init.d
+
+- name: checking if config is on
+  command: sudo chkconfig --level 345 nexus on
+
+- name: remove the conf folder from the nexus directory
+  shell: rm -rf /usr/local/nexus-2.14.2-01/bin/jsw/conf
+
+- name: Downloading the conf zip file from the s3 bucket
+  get_url:
+    url: https://s3-us-west-2.amazonaws.com/yasansible/nexusconf.zip
+    dest: /usr/local/nexus-2.14.2-01/bin/jsw
+
+- name: Unarchive zip file in the same path
+  unarchive:
+    src: /usr/local/nexus-2.14.2-01/bin/jsw/nexusconf.zip
+    dest: /usr/local/nexus-2.14.2-01/bin/jsw
+    remote_src: yes
+
+- name: starting nexus
+  command: sudo service nexus start
+
+- name: wait for nexus to start
+  wait_for: port=8081 delay=3 timeout=90
+
+- name: remove the nexus xml folder from the conf file in order to change the deployment policy
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - /usr/local/sonatype-work/nexus/conf/nexus.xml
+
+- name: create a repository using nexus cli after starting nexus
+  command: nexus-cli create_repository "PETCLINIC"
+
+- name: remove the nexus xml folder from the conf file in order to change the deployment policy
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - /usr/local/sonatype-work/nexus/conf/nexus.xml
+
+- name: Download zip file from s3 bucket
+  get_url:
+    url: https://yasansible.s3-us-west-2.amazonaws.com/nexusxml1.zip
+    dest: /usr/local/sonatype-work/nexus/conf
+
+- name: Unarchive zip file in the same path
+  unarchive:
+    src: /usr/local/sonatype-work/nexus/conf/nexusxml1.zip
+    dest: /usr/local/sonatype-work/nexus/conf
+    remote_src: yes
+
+- name: starting nexus
+  command: sudo service nexus restart
+
+- name: wait for nexus to start
+  wait_for: port=8081 delay=3 timeout=90
+
+
+
+
